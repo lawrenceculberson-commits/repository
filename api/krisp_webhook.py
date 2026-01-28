@@ -7,8 +7,8 @@ class handler(BaseHTTPRequestHandler):
     """
     Vercel serverless function to handle Krisp.ai webhooks.
 
-    - POST: Receives webhook from Krisp.ai and stores temporarily
-    - GET: Returns stored data to SE Command Center (authenticated)
+    - POST: Receives webhook from Krisp.ai and stores temporarily (requires Krisp auth)
+    - GET: Returns stored data to SE Command Center (requires API key auth)
     """
 
     # Temporary storage file path
@@ -17,6 +17,20 @@ class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         """Handle POST from Krisp.ai webhook"""
         try:
+            # Verify Krisp.ai authentication
+            krisp_auth = os.environ.get('KRISP_WEBHOOK_AUTH', '')
+            provided_auth = self.headers.get('Authorization', '')
+
+            if krisp_auth and provided_auth != krisp_auth:
+                self.send_response(403)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'status': 'error',
+                    'message': 'Invalid Krisp.ai authentication'
+                }).encode())
+                return
+
             # Read the incoming data
             content_length = int(self.headers.get('Content-Length', 0))
             post_data = self.rfile.read(content_length)
