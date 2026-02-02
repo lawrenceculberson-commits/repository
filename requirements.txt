@@ -1,1 +1,1 @@
-# No external dependencies - using Python built-ins only
+vercel-kv
