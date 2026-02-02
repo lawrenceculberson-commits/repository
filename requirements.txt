@@ -1,1 +1,8 @@
-vercel-kv
+fastapi
+'uvicorn[standard]'
+psycopg2-binary
+SQLAlchemy
+requests
+python-dotenv
+openai
+vercel-blob
