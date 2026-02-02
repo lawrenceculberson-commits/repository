@@ -1,135 +1,76 @@
-import json
 import os
-from datetime import datetime
+import json
 from http.server import BaseHTTPRequestHandler
+from vercel_kv import kv
 
 class handler(BaseHTTPRequestHandler):
-    """
-    Vercel serverless function to handle Krisp.ai webhooks.
-
-    - POST: Receives webhook from Krisp.ai and stores temporarily (requires Krisp auth)
-    - GET: Returns stored data to SE Command Center (requires API key auth)
-    """
-
-    # Temporary storage file path
-    STORAGE_FILE = '/tmp/krisp_meetings.json'
-
     def do_POST(self):
-        """Handle POST from Krisp.ai webhook"""
+        """
+        Handles the incoming webhook from Krisp.ai.
+        It stores the payload in a Vercel KV store.
+        """
+        content_length = int(self.headers.get('Content-Length', 0))
+        post_data = self.rfile.read(content_length)
+
         try:
-            # Verify Krisp.ai authentication
-            krisp_auth = os.environ.get('KRISP_WEBHOOK_AUTH', '')
-            provided_auth = self.headers.get('Authorization', '')
+            payload = json.loads(post_data.decode('utf-8'))
 
-            if krisp_auth and provided_auth != krisp_auth:
-                self.send_response(403)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    'status': 'error',
-                    'message': 'Invalid Krisp.ai authentication'
-                }).encode())
-                return
+            # Get existing meetings from KV store or initialize an empty list
+            meetings = kv.get('krisp_meetings') or []
 
-            # Read the incoming data
-            content_length = int(self.headers.get('Content-Length', 0))
-            post_data = self.rfile.read(content_length)
-            meeting_data = json.loads(post_data.decode('utf-8'))
+            # Append the new payload
+            meetings.append(payload)
 
-            # Add timestamp
-            meeting_data['received_at'] = datetime.utcnow().isoformat()
+            # Save the updated list back to the KV store
+            kv.set('krisp_meetings', meetings)
 
-            # Load existing meetings
-            meetings = []
-            try:
-                with open(self.STORAGE_FILE, 'r') as f:
-                    meetings = json.load(f)
-            except (FileNotFoundError, json.JSONDecodeError):
-                meetings = []
-
-            # Append new meeting
-            meetings.append(meeting_data)
-
-            # Save back to file
-            with open(self.STORAGE_FILE, 'w') as f:
-                json.dump(meetings, f)
-
-            # Respond to Krisp.ai
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({
-                'status': 'success',
-                'message': 'Meeting data received'
-            }).encode())
+            self.wfile.write(json.dumps({'status': 'success', 'message': 'Webhook received and stored.'}).encode('utf-8'))
 
+        except json.JSONDecodeError:
+            self.send_response(400)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'status': 'error', 'message': 'Invalid JSON payload.'}).encode('utf-8'))
         except Exception as e:
             self.send_response(500)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({
-                'status': 'error',
-                'message': str(e)
-            }).encode())
+            self.wfile.write(json.dumps({'status': 'error', 'message': f'Internal Server Error: {str(e)}'}).encode('utf-8'))
 
     def do_GET(self):
-        """Handle GET from SE Command Center (authenticated)"""
+        """
+        Handles the pull request from the SE Command Center.
+        It retrieves all meetings from the Vercel KV store, returns them,
+        and then clears the store.
+        """
+        # API Key Authentication
+        expected_api_key = os.environ.get("KRISP_API_KEY")
+        auth_header = self.headers.get('Authorization')
+
+        if not expected_api_key or not auth_header or auth_header != f"Bearer {expected_api_key}":
+            self.send_response(401)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'status': 'error', 'message': 'Unauthorized.'}).encode('utf-8'))
+            return
+
         try:
-            # Check API key authentication
-            auth_header = self.headers.get('Authorization', '')
-            expected_key = os.environ.get('KRISP_API_KEY', '')
+            # Retrieve all meetings from the KV store
+            meetings = kv.get('krisp_meetings') or []
 
-            if not expected_key:
-                self.send_response(500)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    'error': 'KRISP_API_KEY not configured in Vercel'
-                }).encode())
-                return
-
-            # Verify Bearer token
-            if not auth_header.startswith('Bearer '):
-                self.send_response(401)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    'error': 'Missing or invalid Authorization header'
-                }).encode())
-                return
-
-            provided_key = auth_header.replace('Bearer ', '').strip()
-            if provided_key != expected_key:
-                self.send_response(403)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    'error': 'Invalid API key'
-                }).encode())
-                return
-
-            # Authentication successful - return meetings
-            meetings = []
-            try:
-                with open(self.STORAGE_FILE, 'r') as f:
-                    meetings = json.load(f)
-
-                # Clear the file after reading (optional - prevents re-importing)
-                with open(self.STORAGE_FILE, 'w') as f:
-                    json.dump([], f)
-
-            except (FileNotFoundError, json.JSONDecodeError):
-                meetings = []
+            # Clear the store after retrieving the meetings
+            kv.delete('krisp_meetings')
 
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps(meetings).encode())
+            self.wfile.write(json.dumps(meetings).encode('utf-8'))
 
         except Exception as e:
             self.send_response(500)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({
-                'error': str(e)
-            }).encode())
+            self.wfile.write(json.dumps({'status': 'error', 'message': f'Internal Server Error: {str(e)}'}).encode('utf-8'))
