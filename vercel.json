@@ -1,3 +1,10 @@
-{
-  "version": 2
-}
+ {
+	"functions": {
+        "api/krisp_webhook.py": {
+          "memory": 1024
+        }
+      },
+      "routes": [
+        { "src": "/api/krisp_webhook", "dest": "/api/krisp_webhook.py" }
+      ]
+  }
